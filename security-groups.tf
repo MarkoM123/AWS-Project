@@ -5,8 +5,6 @@ resource "aws_security_group" "web" {
   description = "Security Group for public web server"
   vpc_id      = aws_vpc.lab.id
 
-  egress = []
-
   tags = {
     Name        = "terraform-lab-web-sg"
     Environment = "Lab"
@@ -19,8 +17,6 @@ resource "aws_security_group" "app" {
   name        = "terraform-lab-app-sg"
   description = "Security Group for private application server"
   vpc_id      = aws_vpc.lab.id
-
-  egress = []
 
   tags = {
     Name        = "terraform-lab-app-sg"
