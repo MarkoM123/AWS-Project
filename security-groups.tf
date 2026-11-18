@@ -1,5 +1,8 @@
 
-# WEB Security Group
+# ============================================================
+# WEB SECURITY GROUP
+# ============================================================
+
 resource "aws_security_group" "web" {
   name        = "terraform-lab-web-sg"
   description = "Security Group for public web server"
@@ -12,7 +15,10 @@ resource "aws_security_group" "web" {
   }
 }
 
-# APP Security Group
+# ============================================================
+# APP SECURITY GROUP
+# ============================================================
+
 resource "aws_security_group" "app" {
   name        = "terraform-lab-app-sg"
   description = "Security Group for private application server"
@@ -25,7 +31,11 @@ resource "aws_security_group" "app" {
   }
 }
 
-# WEB: Allow HTTPS from Internet
+# ============================================================
+# WEB INGRESS RULES
+# ============================================================
+
+# Allow HTTPS from Internet
 resource "aws_vpc_security_group_ingress_rule" "web_https" {
   security_group_id = aws_security_group.web.id
   description       = "Allow HTTPS from Internet"
@@ -35,7 +45,11 @@ resource "aws_vpc_security_group_ingress_rule" "web_https" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# WEB: Allow traffic to APP on TCP 8080
+# ============================================================
+# WEB EGRESS RULES
+# ============================================================
+
+# Allow WEB to communicate with APP on TCP 8080
 resource "aws_vpc_security_group_egress_rule" "web_to_app" {
   security_group_id            = aws_security_group.web.id
   description                  = "Allow traffic to APP"
@@ -45,7 +59,21 @@ resource "aws_vpc_security_group_egress_rule" "web_to_app" {
   referenced_security_group_id = aws_security_group.app.id
 }
 
-# APP: Allow traffic only from WEB Security Group
+# Allow outbound HTTPS from WEB to Internet
+resource "aws_vpc_security_group_egress_rule" "web_https_out" {
+  security_group_id = aws_security_group.web.id
+  description       = "Allow outbound HTTPS"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# ============================================================
+# APP INGRESS RULES
+# ============================================================
+
+# Allow application traffic only from WEB on TCP 8080
 resource "aws_vpc_security_group_ingress_rule" "app_from_web" {
   security_group_id            = aws_security_group.app.id
   description                  = "Allow application traffic only from WEB"
@@ -55,7 +83,10 @@ resource "aws_vpc_security_group_ingress_rule" "app_from_web" {
   referenced_security_group_id = aws_security_group.web.id
 }
 
-# Outputs
+# ============================================================
+# OUTPUTS
+# ============================================================
+
 output "web_security_group_id" {
   description = "WEB Security Group ID"
   value       = aws_security_group.web.id
