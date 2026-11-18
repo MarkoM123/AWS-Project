@@ -1,7 +1,17 @@
-
 #!/bin/bash
-set -euxo pipefail
+set -Eeuo pipefail
 
+exec > >(tee /var/log/app-user-data.log | logger -t app-user-data -s 2>/dev/console) 2>&1
+
+trap 'rc=$?; echo "ERROR: command failed at line $LINENO with exit code $rc"; exit "$rc"' ERR
+
+echo "=== APP USER DATA START ==="
+date
+echo "=== PYTHON CHECK ==="
+command -v python3
+ls -l /usr/bin/python3
+
+echo "=== CREATING APPLICATION ==="
 mkdir -p /opt/app
 
 cat > /opt/app/app.py <<'PYTHON'
@@ -31,6 +41,8 @@ class AppHandler(BaseHTTPRequestHandler):
 HTTPServer(("0.0.0.0", 8080), AppHandler).serve_forever()
 PYTHON
 
+echo "=== CREATING SYSTEMD SERVICE ==="
+
 cat > /etc/systemd/system/terraform-app.service <<'SERVICE'
 [Unit]
 Description=Terraform Lab Python Backend
@@ -48,5 +60,12 @@ RestartSec=5
 WantedBy=multi-user.target
 SERVICE
 
+echo "=== STARTING APPLICATION ==="
 systemctl daemon-reload
-systemctl enable --now terraform-app.service
+systemctl enable terraform-app.service
+systemctl start terraform-app.service
+
+echo "=== SERVICE STATUS ==="
+systemctl status terraform-app.service --no-pager
+
+echo "=== APP USER DATA COMPLETED ==="

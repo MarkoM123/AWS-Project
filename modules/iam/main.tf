@@ -109,6 +109,23 @@ data "aws_iam_policy_document" "terraform_lab" {
       values   = ["ec2.amazonaws.com"]
     }
   }
+
+  # CloudWatch monitoring permissions
+  statement {
+    sid    = "TerraformCloudWatchPermissions"
+    effect = "Allow"
+
+    actions = [
+      "cloudwatch:PutMetricAlarm",
+      "cloudwatch:DeleteAlarms",
+      "cloudwatch:DescribeAlarms",
+      "cloudwatch:ListTagsForResource",
+      "cloudwatch:TagResource",
+      "cloudwatch:UntagResource"
+    ]
+
+    resources = ["*"]
+  }
 }
 
 # ============================================================
