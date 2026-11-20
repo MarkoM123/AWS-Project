@@ -18,3 +18,5 @@ terraform.rc
 Thumbs.db
 .vscode/
 .idea/
+tfplan
+tfplan.json
