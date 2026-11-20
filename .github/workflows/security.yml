@@ -1,0 +1,65 @@
+
+name: Terraform Security Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    name: Terraform Security Checks
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_DEFAULT_REGION: eu-north-1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-north-1
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Format
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Install Checkov
+        run: pip install checkov==3.4.6
+
+      - name: Checkov Security Scan
+        run: checkov -d . --framework terraform
+
+      - name: Install Conftest
+        run: |
+          curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.71.1/conftest_0.71.1_Linux_x86_64.tar.gz -o conftest.tar.gz
+          tar -xzf conftest.tar.gz
+          sudo mv conftest /usr/local/bin/conftest
+
+      - name: Terraform Plan
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Generate Terraform Plan JSON
+        run: terraform show -json tfplan > tfplan.json
+
+      - name: OPA / Conftest Policy Check
+        run: conftest test tfplan.json --policy ./policies/terraform
