@@ -9,11 +9,26 @@ resource "aws_vpc" "lab" {
   }
 }
 
+# The default security group is not attached to either workload. Remove its
+# AWS-created self-ingress and allow-all egress rules to prevent future use.
+resource "aws_default_security_group" "lab" {
+  vpc_id  = aws_vpc.lab.id
+  ingress = []
+  egress  = []
+
+  tags = {
+    Name        = "terraform-lab-default-sg"
+    Environment = "Lab"
+  }
+}
+
 resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.lab.id
-  cidr_block              = "10.50.1.0/24"
-  availability_zone       = "eu-north-1b"
-  map_public_ip_on_launch = true
+  vpc_id            = aws_vpc.lab.id
+  cidr_block        = "10.50.1.0/24"
+  availability_zone = "eu-north-1b"
+  # Only the web instance requests a public IP explicitly; do not assign one
+  # automatically to future workloads placed in this subnet.
+  map_public_ip_on_launch = false
 
   tags = {
     Name = "terraform-lab-public"

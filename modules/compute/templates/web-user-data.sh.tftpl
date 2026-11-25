@@ -1,6 +1,7 @@
 
 #!/bin/bash
-set -euxo pipefail
+set -euo pipefail
+umask 077
 
 dnf install -y nginx openssl
 
@@ -19,6 +20,12 @@ server {
 
     ssl_certificate     /etc/nginx/ssl/terraform-lab.crt;
     ssl_certificate_key /etc/nginx/ssl/terraform-lab.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    server_tokens       off;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
 
     location / {
         proxy_pass http://${app_private_ip}:8080;
@@ -29,6 +36,9 @@ server {
     }
 }
 NGINX
+
+chmod 0600 /etc/nginx/ssl/terraform-lab.key
+chmod 0644 /etc/nginx/ssl/terraform-lab.crt
 
 systemctl enable nginx
 systemctl restart nginx

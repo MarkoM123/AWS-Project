@@ -1,398 +1,94 @@
-# AWS Cloud Security Lab – Terraform
+# AWS Cloud Security Lab
 
-Infrastructure as Code (IaC) project for building and managing a secure AWS environment using Terraform.
+Terraform project for a small two-tier AWS lab in `eu-north-1`. It demonstrates VPC segmentation, a public Nginx reverse proxy, a private Python service, EC2 instance profiles, and basic CloudWatch alarms. It is a learning environment, not a production-ready service.
 
-The purpose of this project is to develop practical experience with AWS infrastructure, cloud networking, IAM, workload security, and security monitoring, following common cloud security principles.
+## Architecture
 
-## Project Objectives
+The root Terraform configuration is the active stack. The folders under `modules/networking`, `modules/security-groups`, and `modules/security-services` and the `environments/dev` and `environments/prod` entry points are currently empty placeholders; they do not create separate stacks.
 
-The project aims to demonstrate:
+| Component | Confirmed configuration |
+|---|---|
+| Region | `eu-north-1` |
+| VPC | `10.50.0.0/16`, DNS support and hostnames enabled |
+| Public subnet | `10.50.1.0/24`, AZ `eu-north-1b`, public IPv4 auto-assignment disabled |
+| Private subnet | `10.50.2.0/24`, AZ `eu-north-1b`, no public IPv4 assignment |
+| Public routing | Default route through an Internet Gateway |
+| Private routing | VPC local route only; no NAT Gateway or VPC endpoints |
+| Web instance | Amazon Linux 2023, `t3.micro`, public IPv4, Nginx on TCP 443 |
+| App instance | Amazon Linux 2023, `t3.micro`, private IP only, Python HTTP service on TCP 8080 |
+| Instance hardening | IMDSv2 required; 8 GiB gp3 root disks encrypted and deleted at termination |
+| Monitoring | Four CloudWatch metric alarms for CPU and EC2 status checks; no log shipping or alarm notification targets |
+| State | Local Terraform state; no backend is configured |
 
-- Infrastructure provisioning using Terraform.
-- AWS VPC networking and subnet segmentation.
-- Separation of public-facing and private workloads.
-- IAM roles, policies, and least-privilege access.
-- EC2 workload deployment and hardening.
-- Secure communication using HTTPS.
-- Network access control using Security Groups.
-- Centralized logging and security monitoring.
-- Modular and reusable Terraform configurations.
-- Separation of development and production environments.
-
-## Architecture Overview
-
-The initial architecture consists of a public-facing WEB server and a private APP server deployed inside a dedicated VPC.
-
-```text
-                         INTERNET
-                            |
-                            |
-                    Internet Gateway
-                            |
-                            |
-                 +---------------------+
-                 |      AWS VPC        |
-                 |    10.50.0.0/16     |
-                 |                     |
-                 |  PUBLIC SUBNET      |
-                 |  10.50.1.0/24       |
-                 |                     |
-                 |  +---------------+  |
-                 |  |   WEB SERVER  |  |
-                 |  |   Amazon EC2  |  |
-                 |  |   Nginx HTTPS |  |
-                 |  +-------+-------+  |
-                 |          |          |
-                 |          | TCP 8080 |
-                 |          |          |
-                 |  PRIVATE SUBNET     |
-                 |  10.50.2.0/24       |
-                 |                     |
-                 |  +---------------+  |
-                 |  |   APP SERVER  |  |
-                 |  |   Amazon EC2  |  |
-                 |  | Python Backend|  |
-                 |  +---------------+  |
-                 |                     |
-                 +---------------------+
+```mermaid
+flowchart LR
+    Internet((Internet)) -->|TCP 443| Web[Public EC2\nNginx HTTPS]
+    Web -->|TCP 8080\nsecurity-group reference| App[Private EC2\nPython service]
+    Web -->|TCP 443 egress| Internet
+    App -. no default route .-> Internet
+    Web --> CW[CloudWatch metric alarms]
+    App --> CW
 ```
 
-### AWS Environment
+The web instance explicitly requests a public IPv4 address; the public subnet does not assign public addresses automatically to future instances. The app private address is passed from Terraform to the Nginx user data template. The app security group accepts TCP 8080 only from the web security group. Security groups are stateful, so response packets for an allowed connection do not need a separate reverse rule. The web security group allows public HTTPS ingress and explicit HTTPS plus app-port egress. There is no SSH or RDP ingress rule.
 
-| Component | Configuration |
-|---|---|
-| Cloud Provider | Amazon Web Services |
-| Region | eu-north-1 (Stockholm) |
-| Infrastructure as Code | Terraform |
-| Terraform AWS Provider | 6.x |
-| Operating System | Amazon Linux 2023 |
-| EC2 Instance Type | t3.micro |
-| VPC CIDR | 10.50.0.0/16 |
-| Public Subnet | 10.50.1.0/24 |
-| Private Subnet | 10.50.2.0/24 |
-| WEB Server | Nginx |
-| APP Server | Python HTTP Server |
-| WEB Protocol | HTTPS |
-| Backend Protocol | HTTP, TCP 8080 |
+The repository does not define a custom Network ACL. AWS's default network ACL is therefore used; segmentation is enforced by route tables and security groups. Terraform empties the VPC default security group, and neither instance uses it. Both subnets are in one availability zone, so the design has no AZ-level resilience.
 
-## Network Architecture
+See [docs/architecture.md](docs/architecture.md) for traffic flows and trust boundaries.
 
-### VPC
+## Security controls and limitations
 
-A dedicated VPC named `terraform-lab-vpc` is provisioned with CIDR range `10.50.0.0/16`.
+- EC2 requires IMDSv2, uses encrypted EBS root volumes, and receives an IAM instance profile.
+- The app process runs as a dedicated non-login user with systemd hardening.
+- Nginx permits TLS 1.2/1.3 and adds basic response security headers.
+- The web certificate is self-signed. Browsers and clients will not trust it without explicit trust configuration; use a DNS name and managed certificate before public production use.
+- The app subnet has no internet egress. This avoids NAT cost and direct internet reachability, but prevents app access to package repositories and Systems Manager endpoints. The IAM role alone does not make the private app manageable by SSM.
+- The web instance has a route to the internet and the SSM managed policy, but live SSM registration has not been verified.
+- Terraform state is local. Keep it outside version control and protect the machine and backups that store it. State encryption, versioning, locking and centralized access control are not configured.
+- CloudWatch alarms observe EC2 CPU and status metrics only. There is no CloudTrail trail, CloudWatch Logs ingestion, alarm action or notification channel in this repository.
+- The Terraform provisioning policy still has broad EC2 permissions with `Resource = "*"`; this is constrained to `eu-north-1`, but it is not least privilege. Narrowing the full EC2 lifecycle policy needs a plan-backed action/resource review before changing it.
 
-VPC configuration:
-- DNS resolution enabled.
-- DNS hostnames enabled.
-- Internet Gateway attached.
-
-### Public Subnet
-
-CIDR: `10.50.1.0/24`
-
-The public subnet hosts the WEB EC2 instance.
-
-Its route table contains:
-- Local VPC route.
-- Default route `0.0.0.0/0` through the Internet Gateway.
-
-### Private Subnet
-
-CIDR: `10.50.2.0/24`
-
-The private subnet hosts the APP EC2 instance.
-
-Its route table contains:
-- Local VPC route.
-- No default route to the internet.
-- No NAT Gateway.
-
-The absence of a NAT Gateway prevents direct outbound internet access from the private subnet. Communication between public and private subnets is supported through the VPC local route.
-
-### Security Groups
-
-Two Security Groups implement workload-level network segmentation.
-
-**WEB Security Group**
-
-Inbound:
-- TCP 443 from `0.0.0.0/0`.
-
-Outbound:
-- TCP 8080 to the APP Security Group.
-- TCP 443 to `0.0.0.0/0`.
-
-**APP Security Group**
-
-Inbound:
-- TCP 8080 exclusively from the WEB Security Group.
-
-Security Groups are stateful, allowing return traffic for permitted connections.
-
-## Compute Layer
-
-### WEB Server
-
-The WEB server is deployed in the public subnet.
-
-Components:
-- Amazon Linux 2023.
-- Nginx.
-- OpenSSL.
-- HTTPS listener on TCP 443.
-- Self-signed TLS certificate.
-- Nginx reverse proxy configuration.
-
-The WEB server forwards incoming HTTPS requests to the private APP server over TCP 8080.
-
-### APP Server
-
-The APP server is deployed in the private subnet.
-
-Components:
-- Amazon Linux 2023.
-- Python 3.
-- Python HTTP Server.
-- Systemd service for application management.
-
-The backend application returns JSON responses containing server information, request path, and timestamp.
-
-The APP server does not have a public IP address and is not intended to be accessed directly from the internet.
-
-## IAM and Access Management
-
-The project uses separate AWS CLI profiles for infrastructure administration and lab operations.
-
-| Profile | Purpose |
-|---|---|
-| terraform-admin | IAM administration |
-| terraform-lab | Infrastructure provisioning |
-
-IAM resources include:
-
-- `Terraform_policy` – customer-managed policy for Terraform operations.
-- `terraform-lab-ec2-ssm-role` – IAM role assumed by EC2.
-- `terraform-lab-ec2-instance-profile` – instance profile attached to EC2.
-- `AmazonSSMManagedInstanceCore` – AWS managed policy for Systems Manager access.
-
-The IAM module is configured to use the aliased administrative AWS provider.
-
-## Terraform Project Structure
-
-```text
-aws-lab/
-│
-├── versions.tf
-├── providers.tf
-├── main.tf
-├── variables.tf
-├── terraform.tfvars.example
-├── outputs.tf
-├── locals.tf
-├── data.tf
-│
-├── networking.tf
-├── security-groups.tf
-├── iam.tf
-├── ec2.tf
-├── logging.tf
-├── security-services.tf
-│
-├── modules/
-│   ├── networking/
-│   ├── security-groups/
-│   ├── iam/
-│   ├── compute/
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   ├── outputs.tf
-│   │   └── templates/
-│   │       ├── app-user-data.sh.tftpl
-│   │       └── web-user-data.sh.tftpl
-│   ├── logging/
-│   └── security-services/
-│
-├── environments/
-│   ├── dev/
-│   └── prod/
-│
-├── policies/
-│   ├── iam/
-│   └── security/
-│
-├── README.md
-└── .gitignore
-```
-
-The project uses a root Terraform module and separate child modules. The modularization process is ongoing.
+The full assessment and proposed roadmap are in [docs/security-assessment.md](docs/security-assessment.md). Service and cost trade-offs are in [docs/cost-analysis.md](docs/cost-analysis.md). Security reporting guidance is in [SECURITY.md](SECURITY.md).
 
 ## Prerequisites
 
-Required tools:
+- Terraform CLI (the CI workflow currently validates with 1.10.5).
+- For the full local scan suite: TFLint 0.66.0, Checkov 3.4.11, Trivy 0.76.2, and Gitleaks 8.30.1. The workflow pins these versions; use their official installation instructions.
+- AWS CLI v2 and an AWS account only for a manual deployment.
+- Local AWS CLI profiles `terraform-lab` and `terraform-admin` configured with the required permissions. Terraform uses these profiles; do not put access keys in `.tfvars` or commit credential files.
 
-- AWS CLI v2.
-- Terraform CLI.
-- Git.
-- An AWS account with the required permissions.
-- Windows PowerShell or another supported terminal.
+The security workflow does not authenticate to AWS, run a plan, or deploy infrastructure. Terraform OIDC for future deployment is intentionally not configured.
 
-AWS CLI profiles must be configured before running Terraform.
+## Safe local checks
 
-Example profile verification:
+Run from the repository root. These commands initialize providers locally and validate configuration; they do not create AWS resources.
 
-```powershell
-aws sts get-caller-identity --profile terraform-lab
-aws sts get-caller-identity --profile terraform-admin
-```
-
-## Terraform Deployment
-
-Run commands from the project root directory.
-
-### 1. Initialize Terraform
-
-```powershell
-terraform init
-```
-
-### 2. Validate configuration
-
-```powershell
+```sh
+terraform init -backend=false
+terraform fmt -check -recursive
 terraform validate
+tflint --recursive
+checkov -d . --framework terraform --skip-path .terraform --soft-fail --hard-fail-on CKV_AWS_356
+trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .terraform .
+gitleaks git --redact --no-banner .
 ```
 
-### 3. Format Terraform files
+The CI workflow runs these checks on pull requests targeting `main` and pushes to `main`, `fix/**`, and `security/**`. It has read-only repository permission and no AWS credentials. Checkov reports all findings and fails on the broad IAM resource-scope check `CKV_AWS_356`; other Checkov findings are reported for review. Trivy fails on High/Critical findings; TFLint and Gitleaks fail on their errors/findings.
 
-```powershell
-terraform fmt -recursive
-```
+## Manual deployment
 
-### 4. Review execution plan
+Review `terraform plan` and the IAM permissions in a controlled AWS account before deployment. The following commands can create billable AWS resources and are not run by CI:
 
-```powershell
+```sh
+terraform init
 terraform plan
-```
-
-### 5. Apply infrastructure
-
-```powershell
 terraform apply
 ```
 
-Review the proposed changes before approving the deployment.
+Destroying a stack is also a live infrastructure change. Review Terraform state and AWS billing before any manual cleanup. No backend migration is configured; do not switch backend or move state without a separate migration plan and backup.
 
-### 6. Inspect Terraform state
+## Cost profile
 
-```powershell
-terraform state list
-```
+The active stack can incur charges for two EC2 instances, two EBS volumes, the web instance's public IPv4 address, CloudWatch alarms, and data transfer. Prices depend on region, runtime, storage and usage; use the AWS Pricing Calculator before a long-running deployment. The current design deliberately has no NAT Gateway or paid interface endpoints.
 
-Inspect a specific resource:
-
-```powershell
-terraform state show module.compute.aws_instance.web
-```
-
-### 7. Destroy infrastructure
-
-```powershell
-terraform destroy
-```
-
-**Warning:** This command destroys managed infrastructure. Always review the execution plan and understand the consequences before confirming.
-
-## Remote Management
-
-AWS Systems Manager Session Manager is used to access supported EC2 instances without requiring inbound SSH access.
-
-Example:
-
-```powershell
-aws ssm start-session `
-  --target INSTANCE_ID `
-  --profile terraform-admin `
-  --region eu-north-1
-```
-
-The private APP instance currently has no direct connectivity to Systems Manager because the private subnet has no NAT Gateway or SSM VPC endpoints. No additional paid connectivity resources are included in the current design.
-
-## Security Considerations
-
-The project incorporates the following security principles:
-
-- Network segmentation between public and private workloads.
-- Restricted inbound access to the APP server.
-- IAM role-based access for EC2.
-- Separation of administrative and infrastructure provisioning identities.
-- HTTPS for external WEB communication.
-- Encrypted EBS volumes.
-- IMDSv2 requirement for EC2 instances.
-- No hardcoded AWS access keys in Terraform configuration.
-- Sensitive Terraform files excluded from Git.
-
-The current IAM policy is designed for the lab environment and should be further restricted before production use.
-
-The WEB TLS certificate is self-signed and is intended for testing, not production deployment.
-
-## Current Implementation Status
-
-| Component | Status |
-|---|---|
-| VPC | Implemented |
-| Public and private subnets | Implemented |
-| Internet Gateway | Implemented |
-| Route tables | Implemented |
-| Network ACL | Implemented |
-| Security Groups | Implemented |
-| IAM role and policy | Implemented |
-| EC2 WEB instance | Running |
-| Nginx HTTPS | Configured and running |
-| EC2 APP instance | Running |
-| Python backend | Deployment troubleshooting |
-| WEB-to-APP connectivity | Pending validation |
-| CloudWatch logging | Planned |
-| GuardDuty | Planned |
-| Security Hub | Planned |
-| Further Terraform modularization | In progress |
-| Dev/Prod environment separation | Planned |
-
-**Known issue:** The APP instance's cloud-init `scripts-user` module fails during User Data execution. The backend service has therefore not yet been verified as operational. A diagnostic User Data update is being prepared to capture the exact failure during the next APP instance deployment.
-
-## Planned Improvements
-
-Future development includes:
-
-1. Complete the WEB-to-APP communication.
-2. Improve Terraform module organization.
-3. Implement centralized CloudWatch logging.
-4. Integrate Amazon GuardDuty.
-5. Integrate AWS Security Hub.
-6. Implement AWS CloudTrail monitoring.
-7. Improve IAM least-privilege permissions.
-8. Introduce separate Dev and Prod configurations.
-9. Add automated Terraform security checks.
-10. Implement infrastructure validation and deployment automation through GitHub Actions.
-
-## Cost Management
-
-This project is designed as a cost-conscious AWS lab.
-
-The current architecture avoids:
-- NAT Gateway.
-- Paid VPC interface endpoints.
-- Unnecessary always-on infrastructure.
-
-EC2 instances, EBS volumes, public IPv4 addresses, logging, and security services may still incur charges. Review AWS pricing and billing before enabling additional services.
-
-Terminate or destroy resources when they are no longer required.
-
-## Repository
-
-GitHub: https://github.com/MarkoM123/AWS-Project
-
----
-
-**Project:** AWS Cloud Security Lab  
-**Infrastructure as Code:** Terraform  
-**Cloud Provider:** Amazon Web Services  
-**Primary Focus:** Cloud Infrastructure, Networking, IAM and Security Engineering
+CloudTrail, centralized log storage, GuardDuty, AWS Config, WAF, ALB and VPC endpoints remain optional follow-up work. Their purpose and cost/complexity trade-offs are documented in [docs/cost-analysis.md](docs/cost-analysis.md); none are enabled by this repository.
