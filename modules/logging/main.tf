@@ -1,4 +1,15 @@
 
+terraform {
+  required_version = ">= 1.6.0, < 2.0.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0, < 7.0"
+    }
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "web_cpu" {
   alarm_name          = "terraform-lab-web-high-cpu"
   alarm_description   = "WEB EC2 CPU utilization exceeds 80%"

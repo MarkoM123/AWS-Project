@@ -1,11 +1,16 @@
 
 terraform {
+  required_version = ">= 1.6.0, < 2.0.0"
+
   required_providers {
     aws = {
-      source = "hashicorp/aws"
+      source  = "hashicorp/aws"
+      version = ">= 6.0, < 7.0"
     }
   }
 }
+
+data "aws_caller_identity" "current" {}
 
 # ============================================================
 # TERRAFORM EXECUTION POLICY
@@ -42,6 +47,11 @@ data "aws_iam_policy_document" "terraform_lab" {
       "ec2:DeleteRoute",
       "ec2:AssociateRouteTable",
       "ec2:DisassociateRouteTable",
+
+      # VPC Gateway Endpoints
+      "ec2:CreateVpcEndpoint",
+      "ec2:ModifyVpcEndpoint",
+      "ec2:DeleteVpcEndpoints",
 
       # Security Groups
       "ec2:CreateSecurityGroup",
@@ -100,7 +110,7 @@ data "aws_iam_policy_document" "terraform_lab" {
     ]
 
     resources = [
-      "arn:aws:iam::457136874735:role/terraform-lab-ec2-ssm-role"
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/terraform-lab-ec2-ssm-role"
     ]
 
     condition {
@@ -110,9 +120,9 @@ data "aws_iam_policy_document" "terraform_lab" {
     }
   }
 
-  # CloudWatch monitoring permissions
+  # Terraform manages only alarms in this lab's namespace.
   statement {
-    sid    = "TerraformCloudWatchPermissions"
+    sid    = "TerraformCloudWatchAlarmManagement"
     effect = "Allow"
 
     actions = [
@@ -124,7 +134,9 @@ data "aws_iam_policy_document" "terraform_lab" {
       "cloudwatch:UntagResource"
     ]
 
-    resources = ["*"]
+    resources = [
+      "arn:aws:cloudwatch:eu-north-1:${data.aws_caller_identity.current.account_id}:alarm:terraform-lab-*"
+    ]
   }
 }
 
