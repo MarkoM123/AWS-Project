@@ -83,7 +83,7 @@ resource "aws_instance" "web" {
   user_data = templatefile(
     "${path.module}/templates/web-user-data.sh.tftpl",
     {
-      app_private_ip = "10.50.2.105"
+      app_private_ip = aws_instance.app.private_ip
     }
   )
 
