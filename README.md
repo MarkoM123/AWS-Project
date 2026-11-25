@@ -12,9 +12,9 @@ The root Terraform configuration is the active stack. The folders under `modules
 | VPC | `10.50.0.0/16`, DNS support and hostnames enabled |
 | Public subnet | `10.50.1.0/24`, AZ `eu-north-1b`, public IPv4 auto-assignment disabled |
 | Private subnet | `10.50.2.0/24`, AZ `eu-north-1b`, no public IPv4 assignment |
-| Public routing | Default route through an Internet Gateway |
+| Public routing | Default route through an Internet Gateway; regional S3 prefix-list route through a Gateway VPC endpoint |
 | Private routing | VPC local route only; no NAT Gateway or VPC endpoints |
-| Web instance | Amazon Linux 2023, `t3.micro`, public IPv4, Nginx on TCP 443 |
+| Web instance | Amazon Linux 2023, `t3.micro`, public IPv4, Nginx on TCP 443; outbound HTTPS only to regional S3 |
 | App instance | Amazon Linux 2023, `t3.micro`, private IP only, Python HTTP service on TCP 8080 |
 | Instance hardening | IMDSv2 required; 8 GiB gp3 root disks encrypted and deleted at termination |
 | Monitoring | Four CloudWatch metric alarms for CPU and EC2 status checks; no log shipping or alarm notification targets |
@@ -24,13 +24,16 @@ The root Terraform configuration is the active stack. The folders under `modules
 flowchart LR
     Internet((Internet)) -->|TCP 443| Web[Public EC2\nNginx HTTPS]
     Web -->|TCP 8080\nsecurity-group reference| App[Private EC2\nPython service]
-    Web -->|TCP 443 egress| Internet
+    Web -->|TCP 443 to AWS S3 prefix list| S3EP[S3 Gateway VPC Endpoint]
+    S3EP --> AL2023[(Regional AL2023 repository bucket)]
     App -. no default route .-> Internet
     Web --> CW[CloudWatch metric alarms]
     App --> CW
 ```
 
-The web instance explicitly requests a public IPv4 address; the public subnet does not assign public addresses automatically to future instances. The app private address is passed from Terraform to the Nginx user data template. The app security group accepts TCP 8080 only from the web security group. Security groups are stateful, so response packets for an allowed connection do not need a separate reverse rule. The web security group allows public HTTPS ingress and explicit HTTPS plus app-port egress. There is no SSH or RDP ingress rule.
+The web instance explicitly requests a public IPv4 address; the public subnet does not assign public addresses automatically to future instances. The app private address is passed from Terraform to the Nginx user data template. The app security group accepts TCP 8080 only from the web security group. Security groups are stateful, so response packets for an allowed connection do not need a separate reverse rule. The web security group allows public HTTPS ingress, TCP 8080 to the app security group, and TCP 443 to the regional AWS-managed S3 prefix list. The S3 Gateway endpoint policy limits S3 object reads through that route to the regional AL2023 repository bucket. There is no general HTTPS egress and no SSH or RDP ingress rule.
+
+The web bootstrap runs `dnf install -y nginx openssl`. AL2023 repository mirror lists, metadata and RPMs are served from the regional `al2023-repos-<region>-de612dc2` S3 bucket. The Gateway endpoint adds a more-specific S3 prefix-list route to the public route table; S3 traffic uses the endpoint while non-S3 internet traffic remains blocked by the web security group. AWS documents no additional charge for S3 Gateway endpoints. See [AL2023 package repositories](https://docs.aws.amazon.com/linux/al2023/ug/managing-repos-os-updates.html) and [S3 Gateway endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-s3.html).
 
 The repository does not define a custom Network ACL. AWS's default network ACL is therefore used; segmentation is enforced by route tables and security groups. Terraform empties the VPC default security group, and neither instance uses it. Both subnets are in one availability zone, so the design has no AZ-level resilience.
 
@@ -43,7 +46,7 @@ See [docs/architecture.md](docs/architecture.md) for traffic flows and trust bou
 - Nginx permits TLS 1.2/1.3 and adds basic response security headers.
 - The web certificate is self-signed. Browsers and clients will not trust it without explicit trust configuration; use a DNS name and managed certificate before public production use.
 - The app subnet has no internet egress. This avoids NAT cost and direct internet reachability, but prevents app access to package repositories and Systems Manager endpoints. The IAM role alone does not make the private app manageable by SSM.
-- The web instance has a route to the internet and the SSM managed policy, but live SSM registration has not been verified.
+- The web instance can reach the AL2023 repository bucket through the S3 Gateway endpoint. Other outbound HTTPS destinations, including public SSM endpoints, are blocked by its security group. Live SSM registration is not verified and is not expected from this egress configuration.
 - Terraform state is local. Keep it outside version control and protect the machine and backups that store it. State encryption, versioning, locking and centralized access control are not configured.
 - CloudWatch alarms observe EC2 CPU and status metrics only. There is no CloudTrail trail, CloudWatch Logs ingestion, alarm action or notification channel in this repository.
 - The Terraform provisioning policy still has broad EC2 permissions with `Resource = "*"`; this is constrained to `eu-north-1`, but it is not least privilege. Narrowing the full EC2 lifecycle policy needs a plan-backed action/resource review before changing it.
@@ -89,6 +92,6 @@ Destroying a stack is also a live infrastructure change. Review Terraform state 
 
 ## Cost profile
 
-The active stack can incur charges for two EC2 instances, two EBS volumes, the web instance's public IPv4 address, CloudWatch alarms, and data transfer. Prices depend on region, runtime, storage and usage; use the AWS Pricing Calculator before a long-running deployment. The current design deliberately has no NAT Gateway or paid interface endpoints.
+The active stack can incur charges for two EC2 instances, two EBS volumes, the web instance's public IPv4 address, CloudWatch alarms, and data transfer. Prices depend on region, runtime, storage and usage; use the AWS Pricing Calculator before a long-running deployment. The S3 Gateway endpoint has no additional endpoint charge and avoids a NAT Gateway or paid interface endpoints for AL2023 package downloads.
 
-CloudTrail, centralized log storage, GuardDuty, AWS Config, WAF, ALB and VPC endpoints remain optional follow-up work. Their purpose and cost/complexity trade-offs are documented in [docs/cost-analysis.md](docs/cost-analysis.md); none are enabled by this repository.
+CloudTrail, centralized log storage, GuardDuty, AWS Config, WAF, ALB and additional VPC endpoints remain optional follow-up work. Their purpose and cost/complexity trade-offs are documented in [docs/cost-analysis.md](docs/cost-analysis.md).

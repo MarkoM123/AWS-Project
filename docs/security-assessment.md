@@ -10,7 +10,7 @@ Severity describes source-level risk in this lab. Cost is incremental AWS cost i
 
 | Rank | Severity | Finding and risk | Recommended action | AWS cost | Effort / compatibility |
 |---:|---|---|---|---|---|
-| 1 | Critical (Trivy) | Web-tier TCP 443 egress is allowed to every IPv4 destination. A compromised host can send traffic over arbitrary HTTPS; the rule also supports package bootstrap and potential SSM access. | Remaining: replace general egress with a controlled package/management path. Do not remove it before choosing an alternative because web bootstrap/management may stop working. | Endpoints or proxy infrastructure incur cost | Medium; restrictive egress can break package updates and management. |
+| 1 | Critical (Trivy; remediated) | Web-tier TCP 443 egress was allowed to every IPv4 destination. A compromised host could send traffic over arbitrary HTTPS. | Implemented: S3 Gateway endpoint on the public route table, S3 prefix-list-only HTTPS egress, and endpoint policy restricted to AL2023 repository objects. Public SSM egress is intentionally unavailable. | Gateway endpoint has no additional endpoint fee; normal S3/data transfer charges may apply. | Medium; external bootstrap dependencies beyond AL2023 S3 are now blocked. |
 | 2 | High | The CI workflow used long-lived AWS access-key secrets, then ran `terraform plan` on PR code. A change to Terraform, provider configuration or an external data source could execute with those credentials. | Implemented: CI now has read-only GitHub permission, no AWS credentials, no plan/apply, and runs static validation/scans only. Use OIDC with narrowly scoped trust only in a separately authorized deployment workflow. | None | Low; PRs no longer receive AWS-backed plans. |
 | 3 | High | The Terraform provisioning policy grants many EC2 lifecycle actions on `*`; compromised credentials could affect unrelated EC2 resources in `eu-north-1`. | Plan-backed IAM action/resource analysis; constrain resources and tag/region conditions where every lifecycle API supports them. Preserve unavoidable `Describe*` wildcard-resource permissions. | None | High; can block Terraform if an API's dependent resource permissions are missed. |
 | 4 | High | Python app systemd service ran as root. A remotely reachable app flaw could become host-level root execution. | Implemented: dedicated non-login service user, owned app files, read-only filesystem, and systemd privilege/kernel restrictions. | None | Low; check service startup and log behavior on the next controlled deployment. |
@@ -21,7 +21,7 @@ Severity describes source-level risk in this lab. Cost is incremental AWS cost i
 | 9 | Medium | Terraform state is local, with no backend encryption/locking/versioning or centralized access controls. | Protect local state now. Separately plan a remote S3 backend with encryption, versioning, public-access block, least-privilege access, state locking and a backed-up state migration. | S3 storage/requests; optional KMS key cost | High; state migration can break deployments if done incorrectly; do not change automatically. |
 | 10 | Medium | Both tiers are in one AZ and the web tier is a directly reachable EC2 public endpoint. An AZ or instance failure takes down the service. | For a production availability target, add a second AZ and a managed ingress/failover design; consider WAF only where threat/risk requires it. | Additional EC2/subnet, load balancer, data processing and optional WAF costs | High; substantial architectural change. |
 
-The Trivy IaC scan confirms the broad web egress rule as Critical. This is a source-level finding, not a live AWS assessment.
+The original AWS-0104 finding was source-level and critical. It is remediated in this branch by replacing unrestricted TCP 443 egress with S3 prefix-list egress and a regional AL2023 repository endpoint policy. The Trivy rescan below records whether the rule is now clear; this is not a live AWS assessment.
 
 ## Implemented changes
 
@@ -49,9 +49,13 @@ Nginx is restricted to TLS 1.2/1.3, hides its version token, and emits `X-Conten
 
 ### Network security
 
-The public/private route separation is real in Terraform: only the public route table has `0.0.0.0/0` to the Internet Gateway. The app has no public IP. Security-group references enforce web-to-app TCP 8080 and prevent direct app ingress. There is no SSH/RDP rule. The root security-group resource uses dedicated ingress/egress rule resources; web egress is explicit and app egress is not configured. The VPC default security group is explicitly emptied and unused by either instance. No custom NACL exists; the AWS default ACL is used. There is no NAT or VPC endpoint.
+The public/private route separation is real in Terraform: only the public route table has `0.0.0.0/0` to the Internet Gateway. That table also receives the S3 Gateway endpoint route for the AWS-managed regional S3 prefix list. The endpoint policy restricts object reads to `al2023-repos-<region>-de612dc2/*`. The app has no public IP. Security-group references enforce web-to-app TCP 8080 and prevent direct app ingress. There is no SSH/RDP rule. The web group permits TCP 443 only to the S3 prefix list; the app has no egress rule. The VPC default security group is explicitly emptied and unused by either instance. No custom NACL exists; the AWS default ACL is used. There is no NAT or interface endpoint.
 
-The public instance has an internet route and an all-destination TCP 443 egress rule. This is needed by current package installation/bootstrap behavior but is not an egress allowlist. The public TLS certificate is self-signed. A direct public EC2 address has no load-balancer health check, WAF layer or managed certificate integration. Subnet-wide public IPv4 auto-assignment is disabled; only the web instance explicitly requests a public address.
+The AL2023 user guide's `dnf repolist all --verbose` example shows the enabled repository mirror list and package base URL under the same regional `al2023-repos-<region>-de612dc2.s3.dualstack.<region>.amazonaws.com` bucket. The enabled core repository's mirror list, metadata and RPMs are S3 objects, so the endpoint policy uses `s3:GetObject` on the repository bucket's object ARN. Disabled debug/source/livepatch repositories also use paths in this bucket; if enabled later, their object reads remain within the same resource scope. The endpoint policy does not grant identity permissions. Since the repository bucket is public, package downloads do not require adding S3 permissions to the EC2 role. This repository inspection does not run `dnf` on a deployed instance.
+
+The Terraform provisioning policy adds the EC2 actions required to create, update, and delete a VPC endpoint (`CreateVpcEndpoint`, `ModifyVpcEndpoint`, `DeleteVpcEndpoints`). These remain under the existing `aws:RequestedRegion = eu-north-1` condition and the policy's existing EC2 `Resource = "*"` scope; no other IAM model changes were made.
+
+The public instance retains a default route through the Internet Gateway, but the security group now allows TCP 443 only to the regional S3 prefix list. The endpoint route directs same-region S3 traffic to the S3 Gateway endpoint and its endpoint policy limits reads to AL2023 repository objects. Other external HTTPS dependencies are blocked. The public TLS certificate is self-signed. A direct public EC2 address has no load-balancer health check, WAF layer or managed certificate integration. Subnet-wide public IPv4 auto-assignment is disabled; only the web instance explicitly requests a public address.
 
 ### IAM
 
@@ -85,16 +89,16 @@ Static review and offline scanners can validate source structure and common misc
 
 ## Offline validation results
 
-Results are from the source on this branch. No AWS credentials were used, and no live AWS API call or deployment command was run.
+Results are from the source on this branch. No AWS credentials or mutating AWS API calls were used, and no deployment command was run. The regional AL2023 bucket name was checked with an unauthenticated, read-only S3 request; S3 returned `AccessDenied` for bucket listing and reported `eu-north-1` in the response headers.
 
 | Check | Command | Result |
 |---|---|---|
 | Terraform formatting | `terraform fmt -check -recursive` | Passed after formatting. |
 | Terraform validation | `terraform init -backend=false -input=false && terraform validate` | Passed with Terraform 1.17.2 and AWS provider 6.73.0. No backend or AWS account access was used. |
 | TFLint | `tflint --recursive` (0.66.0) | Passed after adding explicit Terraform version and AWS provider constraints to root and module configurations. |
-| Checkov | `checkov -d . --framework terraform --skip-path .terraform --soft-fail --hard-fail-on CKV_AWS_356` (3.4.11) | 84 passed, 8 failed. The command fails on `CKV_AWS_356` because the Terraform user policy still combines restrictable EC2 lifecycle actions with `Resource = "*"`. Other findings include expected public web IP, detailed monitoring/EBS optimization, IAM user attachment, and no VPC flow logs. The default security group finding is resolved. |
-| Trivy IaC | `trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .terraform .` (0.76.2) | Fails on `AWS-0104` (CRITICAL): web egress TCP 443 is open to `0.0.0.0/0`. This is currently retained for package bootstrap and possible public SSM access; it is a real residual risk, not a false positive. Replace it with controlled egress before production. |
-| Gitleaks | `gitleaks git --redact --no-banner .` (8.30.1) | Passed; 9 commits and about 38 KB scanned, no leaks reported. |
-| Diff whitespace | `git diff --check` | Run before commit. |
+| Checkov | `checkov -d . --framework terraform --skip-path .terraform --soft-fail --hard-fail-on CKV_AWS_356` (3.4.11) | 96 passed, 7 failed. `CKV_AWS_356` passes. Remaining findings: detailed monitoring disabled on both instances, EBS optimization disabled on both `t3.micro` instances, expected public web IP, IAM policy attached directly to a user, and no VPC Flow Logs. Exit code 0 due to the existing `--soft-fail`; the findings remain visible and are not suppressed. |
+| Trivy IaC | `trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .terraform .` (0.76.2) | Passed, exit code 0. No High/Critical misconfigurations were reported; AWS-0104 is no longer present. |
+| Gitleaks | `gitleaks git --redact --no-banner .` (8.30.1) | Passed after commit; no leaks reported. |
+| Diff whitespace | `git diff --check` | Passed after implementation. |
 
-The Checkov and Trivy gates are intentionally not green while the source has the above unresolved high/critical findings.
+Trivy passes after the AWS-0104 remediation. Checkov continues to report seven documented findings; the existing CI command uses `--soft-fail`, so these are visible without making Checkov's step fail. No findings were suppressed as part of this remediation.

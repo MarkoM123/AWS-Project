@@ -63,6 +63,38 @@ resource "aws_route_table" "public" {
   }
 }
 
+data "aws_iam_policy_document" "s3_al2023_repository_endpoint" {
+  statement {
+    sid    = "ReadAmazonLinux2023RepositoryObjects"
+    effect = "Allow"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:GetObject"]
+
+    resources = [
+      "arn:aws:s3:::al2023-repos-${data.aws_region.current.region}-de612dc2/*"
+    ]
+  }
+}
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.lab.id
+  service_name      = "com.amazonaws.${data.aws_region.current.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.public.id]
+  policy            = data.aws_iam_policy_document.s3_al2023_repository_endpoint.json
+
+  tags = {
+    Name        = "terraform-lab-al2023-s3-endpoint"
+    Environment = "Lab"
+    Purpose     = "Amazon Linux 2023 package repositories"
+  }
+}
+
 resource "aws_route" "public_internet" {
   route_table_id         = aws_route_table.public.id
   destination_cidr_block = "0.0.0.0/0"

@@ -59,14 +59,14 @@ resource "aws_vpc_security_group_egress_rule" "web_to_app" {
   referenced_security_group_id = aws_security_group.app.id
 }
 
-# Allow outbound HTTPS from WEB to Internet
-resource "aws_vpc_security_group_egress_rule" "web_https_out" {
+# Allow HTTPS from WEB only to the regional Amazon S3 managed prefix list.
+resource "aws_vpc_security_group_egress_rule" "web_s3_https" {
   security_group_id = aws_security_group.web.id
-  description       = "Allow outbound HTTPS"
+  description       = "Allow HTTPS to Amazon S3 for Amazon Linux 2023 repositories"
   ip_protocol       = "tcp"
   from_port         = 443
   to_port           = 443
-  cidr_ipv4         = "0.0.0.0/0"
+  prefix_list_id    = aws_vpc_endpoint.s3.prefix_list_id
 }
 
 # ============================================================

@@ -10,7 +10,8 @@ This is a source-level assessment. No AWS account was queried, no live configura
 
 - Separate public and private subnets, with only the public route table connected to the Internet Gateway.
 - Public web ingress is TCP 443 only. The private app accepts TCP 8080 from the web security group reference, with no public address and no SSH/RDP ingress.
-- Web egress is explicitly limited to HTTPS and TCP 8080 to the app security group. The app has no configured egress rules.
+- Web egress is explicitly limited to TCP 443 to the regional AWS-managed S3 prefix list and TCP 8080 to the app security group. The app has no configured egress rules.
+- The public route table uses an S3 Gateway VPC endpoint. Its endpoint policy permits only `s3:GetObject` on object ARNs in the regional AL2023 repository bucket (`al2023-repos-<region>-de612dc2/*`). This endpoint policy is an additional filter; it does not grant IAM permissions.
 - The VPC default security group has no ingress or egress rules; both EC2 instances use the dedicated web/app groups.
 - IMDSv2 is required on both EC2 instances; root EBS volumes are encrypted.
 - The app systemd service runs as a dedicated non-login user with a read-only filesystem and privilege-escalation restrictions.
@@ -27,7 +28,7 @@ The Terraform provisioning policy still grants many EC2 create, update, delete a
 
 ## Network and workload security
 
-The private subnet has only the local VPC route. The public web instance can reach external HTTPS for operating-system package installation; this broad HTTPS egress can also be used for unwanted outbound traffic. The app has no internet route. No custom Network ACL is defined, so AWS's default network ACL applies; it is not an additional restrictive control here.
+The private subnet has only the local VPC route. The public web instance can reach the regional AL2023 package repository through the S3 Gateway endpoint and S3 prefix-list egress rule. Other outbound HTTPS destinations are blocked; the Internet Gateway default route does not override the more-specific S3 endpoint route, and the web security group denies other outbound HTTPS. The app has no internet route. No custom Network ACL is defined, so AWS's default network ACL applies; it is not an additional restrictive control here. Security groups are stateful, so responses to inbound client HTTPS connections require no separate outbound internet rule.
 
 The web certificate is self-signed and generated at boot. TLS encryption is present, but clients cannot authenticate the public endpoint through a trusted CA. There is no HTTP listener or redirect because port 80 is not exposed. The Python service is a minimal demonstration server, not a production application server.
 

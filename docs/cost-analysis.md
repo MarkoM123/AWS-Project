@@ -10,14 +10,18 @@ The repository defines resources that can incur recurring or usage-based charges
 | Two 8 GiB gp3 EBS root volumes | Provisioned storage while volumes exist | Keep volumes small; `delete_on_termination = true` helps avoid orphaned root disks. |
 | Web public IPv4 address | Public IPv4 hourly pricing while allocated/in use | Remove the public endpoint when the lab is idle; public IPv4 may be charged even when attached. |
 | CloudWatch metric alarms | Alarm count and any custom metric ingestion | Four alarms are configured; they use EC2 metrics. No logs or custom metrics are configured. |
-| Internet data transfer | Traffic to/from the internet | Keep responses small; web 443 egress supports bootstrap and outbound HTTPS. |
+| Internet data transfer | Traffic to/from the internet | Keep responses small; web egress is limited to S3 package downloads and app TCP 8080. |
 | Terraform state | No AWS charge while local | Local state avoids backend cost but shifts confidentiality, backup and locking duties to the operator. |
 
 The app subnet has no NAT Gateway or interface endpoints. This avoids recurring networking charges but leaves the app without SSM or general outbound connectivity. Do not estimate actual project spend from this source alone; use the AWS Pricing Calculator for `eu-north-1` and check Cost Explorer after an authorized deployment.
 
 ## Changes in this branch
 
-No new AWS resources are introduced. IAM policy changes, app systemd hardening, Nginx changes, documentation and GitHub Actions scanners do not create AWS charges by themselves. The workflow consumes GitHub-hosted runner minutes and downloads scanner tools; it has no AWS credentials and does not run a plan or deployment.
+The Terraform configuration adds an S3 Gateway VPC endpoint associated with the existing public route table. AWS does not charge an additional fee for S3 Gateway endpoints. Standard S3 request/data transfer and internet data-transfer charges may still apply according to current pricing and usage; no NAT Gateway or paid interface endpoint is added. The endpoint supports the existing AL2023 `dnf` bootstrap by routing repository traffic to S3 without general HTTPS egress. Other outbound HTTPS dependencies will fail until an explicit, separately reviewed path is designed.
+
+The endpoint policy restricts requests to `s3:GetObject` on `arn:aws:s3:::al2023-repos-<region>-de612dc2/*`. AL2023 repository configuration uses regional S3 URLs for mirror lists, metadata and RPM objects. The security group additionally allows TCP 443 only to the regional S3 managed prefix list. The policy does not grant IAM permissions and does not permit access to other S3 buckets.
+
+No NAT Gateway or interface endpoint is added; the S3 Gateway endpoint is the only additional AWS resource in this change. IAM policy changes, app systemd hardening, Nginx changes, documentation and GitHub Actions scanners do not create AWS charges by themselves. The workflow consumes GitHub-hosted runner minutes and downloads scanner tools; it has no AWS credentials and does not run a plan or deployment.
 
 ## Optional follow-up services
 

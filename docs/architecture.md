@@ -9,12 +9,13 @@ The repository's active Terraform stack is at the root. It directly declares VPC
 | Region | `eu-north-1`, configured on default and `admin` AWS provider aliases |
 | VPC | `10.50.0.0/16`, DNS support and hostnames enabled |
 | Subnets | Public `10.50.1.0/24` (public IPv4 auto-assignment disabled) and private `10.50.2.0/24`, both in `eu-north-1b` |
-| Public route | `0.0.0.0/0` through an Internet Gateway |
+| Public route | `0.0.0.0/0` through an Internet Gateway, plus an AWS-managed S3 prefix-list route through a Gateway VPC endpoint |
 | Private route | Route table association only; implicit local VPC route, no default internet route |
 | Web tier | Amazon Linux 2023 `t3.micro`, public subnet, public IPv4, TCP 443 Nginx reverse proxy |
 | App tier | Amazon Linux 2023 `t3.micro`, private subnet, no public IPv4, Python HTTP service on TCP 8080 |
 | IAM | Terraform policy attached to pre-existing `terraform-lab` IAM user; EC2 role/profile has `AmazonSSMManagedInstanceCore` |
-| Security groups | Web: public TCP 443 ingress; TCP 443 internet and TCP 8080 to app egress. App: TCP 8080 ingress from web group; no egress rule configured. VPC default group is empty and unused. |
+| Security groups | Web: public TCP 443 ingress; TCP 443 to S3 prefix list and TCP 8080 to app egress. App: TCP 8080 ingress from web group; no egress rule configured. VPC default group is empty and unused. |
+| Package repository | S3 Gateway endpoint on the public route table; endpoint policy allows only `s3:GetObject` on `al2023-repos-<region>-de612dc2/*` |
 | Storage | Each root volume 8 GiB gp3, encrypted, deleted on instance termination |
 | Monitoring | Four CloudWatch metric alarms: CPU and status checks for each instance; no actions or log groups |
 | State | Local state; no remote backend or locking configuration |
@@ -32,13 +33,14 @@ flowchart TB
         IGW[Internet Gateway]
         subgraph Public[Public subnet 10.50.1.0/24\neu-north-1b]
           Web[Web EC2\nExplicit public IPv4\nNginx TLS 1.2/1.3\nTCP 443]
-          WebSG[Web security group\nIngress 443 from internet\nEgress 443 internet, 8080 app SG]
+          WebSG[Web security group\nIngress 443 from internet\nEgress 443 S3 prefix list, 8080 app SG]
         end
         subgraph Private[Private subnet 10.50.2.0/24\neu-north-1b]
           App[App EC2\nNo public IPv4\nPython HTTP :8080]
           AppSG[App security group\nIngress 8080 from web SG\nNo egress rule]
         end
-        PubRT[Public route table\n0.0.0.0/0 -> IGW]
+        S3EP[S3 Gateway endpoint\nAL2023 repository objects only]
+        PubRT[Public route table\n0.0.0.0/0 -> IGW\nS3 prefix list -> endpoint]
         PrivRT[Private route table\nLocal VPC route only]
       end
       CW[CloudWatch CPU and status alarms\nNo notifications or log ingestion]
@@ -47,6 +49,8 @@ flowchart TB
     Internet -->|HTTPS :443| IGW --> Web
     Web --> WebSG
     Web -->|HTTP :8080| AppSG --> App
+    Web -->|HTTPS :443 to S3 prefix list| S3EP
+    S3EP --> AL2023[(al2023-repos-region-de612dc2)]
     Web -. instance profile .-> IAM
     App -. shared instance profile .-> IAM
     Web --> CW
@@ -56,7 +60,7 @@ flowchart TB
     App -. no internet route; SSM not verified .-> Internet
 ```
 
-The security-group arrows above represent allowed connection initiation. Security groups are stateful, so response traffic for established connections is allowed automatically.
+The security-group arrows above represent allowed connection initiation. Security groups are stateful, so response traffic for established connections is allowed automatically. In particular, inbound HTTPS response traffic does not need a separate outbound internet rule.
 
 ## Request flows
 
@@ -67,7 +71,7 @@ The security-group arrows above represent allowed connection initiation. Securit
 3. The web security group permits TCP 443 ingress from `0.0.0.0/0`.
 4. Nginx terminates TLS using a self-signed certificate and proxies the request. Client certificate trust is not provided by this lab certificate.
 
-There is no TCP 80 ingress or HTTP redirect. Public web egress on TCP 443 is allowed to any IPv4 address; that supports package installation and outbound HTTPS but is broader than a destination allowlist.
+There is no TCP 80 ingress or HTTP redirect. Web egress on TCP 443 is limited to the AWS-managed regional S3 prefix list.
 
 ### Web tier to app tier
 
@@ -88,6 +92,10 @@ The app has no public IPv4 and no route to the internet. Its route table does no
 
 ## Management and availability limitations
 
-Both EC2 instances use a role with `AmazonSSMManagedInstanceCore`, but the private subnet has no network path to Systems Manager. The web subnet has outbound HTTPS and may reach public SSM endpoints, but successful SSM registration was not verified. Do not rely on SSM for app access until connectivity is explicitly designed and tested.
+The web bootstrap runs `dnf install -y nginx openssl`. AL2023 repository configuration uses regional S3 dual-stack URLs for mirror lists, metadata and RPM objects under `al2023-repos-<region>-de612dc2`. The public route table associates an S3 Gateway endpoint, whose AWS-managed prefix-list route is more specific than the Internet Gateway default route. The web security group allows TCP 443 only to that prefix list, and the endpoint policy allows only `s3:GetObject` on repository object ARNs. Other HTTPS destinations, including public SSM endpoints, are blocked. The app subnet has no network path to Systems Manager or package repositories.
+
+The endpoint policy does not grant IAM permissions; it filters S3 requests traversing the endpoint. The AL2023 repository bucket is publicly readable, and DNF retrieves known mirror-list, metadata and RPM object keys. The policy does not allow bucket listing, writes, or access to other buckets. See [AWS AL2023 repository configuration](https://docs.aws.amazon.com/linux/al2023/ug/managing-repos-os-updates.html) and [S3 endpoint policy guidance](https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html).
+
+Both EC2 instances use a role with `AmazonSSMManagedInstanceCore`, but neither has a configured path to public Systems Manager endpoints. Successful SSM registration was not verified. Do not rely on SSM for either instance until connectivity is explicitly designed and tested.
 
 Both subnets share one AZ (`eu-north-1b`). An AZ disruption affects both tiers. Multi-AZ redundancy would require new subnets, routing, and likely a load balancer or another explicit failover design; it is outside the low-cost baseline.

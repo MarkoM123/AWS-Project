@@ -48,6 +48,11 @@ data "aws_iam_policy_document" "terraform_lab" {
       "ec2:AssociateRouteTable",
       "ec2:DisassociateRouteTable",
 
+      # VPC Gateway Endpoints
+      "ec2:CreateVpcEndpoint",
+      "ec2:ModifyVpcEndpoint",
+      "ec2:DeleteVpcEndpoints",
+
       # Security Groups
       "ec2:CreateSecurityGroup",
       "ec2:DeleteSecurityGroup",
